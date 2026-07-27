@@ -8,6 +8,7 @@ A Sora/Veo-style video generator using:
 
 This replaces the old non-parametric Loom engine.
 """
+
 import numpy as np
 from pathlib import Path
 from typing import Optional
