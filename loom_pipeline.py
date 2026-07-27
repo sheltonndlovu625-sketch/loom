@@ -2,6 +2,7 @@
 Loom Video Diffusion Pipeline
 Full inference pipeline: Text -> Latent Diffusion -> VAE Decode -> Video
 """
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -17,6 +18,7 @@ class TextEncoder:
     Wrapper for text encoding. Tries T5-small first, falls back to CLIP,
     then to a simple learned embedding for testing.
     """
+
     def __init__(self, embed_dim: int = 768, max_length: int = 77):
         self.embed_dim = embed_dim
         self.max_length = max_length
@@ -27,16 +29,26 @@ class TextEncoder:
         # Try T5-small
         try:
             from transformers import T5Tokenizer, T5EncoderModel
+
             self.tokenizer = T5Tokenizer.from_pretrained("t5-small")
-            self.model = T5EncoderModel.from_pretrained("t5-small").to(self.device).eval()
+            self.model = (
+                T5EncoderModel.from_pretrained("t5-small").to(self.device).eval()
+            )
             self.model_type = "t5"
             print("Text encoder: Loaded T5-small")
         except Exception as e:
             print(f"T5-small not available ({e}), trying CLIP...")
             try:
                 from transformers import CLIPTokenizer, CLIPTextModel
-                self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
-                self.model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32").to(self.device).eval()
+
+                self.tokenizer = CLIPTokenizer.from_pretrained(
+                    "openai/clip-vit-base-patch32"
+                )
+                self.model = (
+                    CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
+                    .to(self.device)
+                    .eval()
+                )
                 self.model_type = "clip"
                 print("Text encoder: Loaded CLIP")
             except Exception as e2:
@@ -81,11 +93,17 @@ class TextEncoder:
 
 class DDIMSampler:
     """DDIM sampler for fast deterministic generation."""
+
     def __init__(self, num_steps: int = 50):
         self.num_steps = num_steps
         self.timesteps = torch.linspace(999, 0, num_steps, dtype=torch.long)
 
-    def set_noise_schedule(self, beta_start: float = 0.0001, beta_end: float = 0.02, num_train_timesteps: int = 1000):
+    def set_noise_schedule(
+        self,
+        beta_start: float = 0.0001,
+        beta_end: float = 0.02,
+        num_train_timesteps: int = 1000,
+    ):
         betas = torch.linspace(beta_start, beta_end, num_train_timesteps)
         alphas = 1.0 - betas
         self.alphas_cumprod = torch.cumprod(alphas, dim=0)
@@ -135,18 +153,26 @@ class DDIMSampler:
 
             # DDIM step
             alpha_t = self.alphas_cumprod[t]
-            alpha_prev = self.alphas_cumprod[timesteps[i + 1]] if i < len(timesteps) - 1 else torch.tensor(1.0)
+            alpha_prev = (
+                self.alphas_cumprod[timesteps[i + 1]]
+                if i < len(timesteps) - 1
+                else torch.tensor(1.0)
+            )
 
             pred_x0 = (x - torch.sqrt(1 - alpha_t) * noise_pred) / torch.sqrt(alpha_t)
             pred_x0 = torch.clamp(pred_x0, -10, 10)
 
-            x = torch.sqrt(alpha_prev) * pred_x0 + torch.sqrt(1 - alpha_prev) * noise_pred
+            x = (
+                torch.sqrt(alpha_prev) * pred_x0
+                + torch.sqrt(1 - alpha_prev) * noise_pred
+            )
 
         return x
 
 
 class LoomVideoPipeline:
     """End-to-end video generation pipeline."""
+
     def __init__(
         self,
         vae_path: str,
@@ -159,7 +185,9 @@ class LoomVideoPipeline:
         text_embed_dim: int = 768,
         device: Optional[str] = None,
     ):
-        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        self.device = torch.device(
+            device or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
         print(f"Pipeline device: {self.device}")
 
         # Load VAE
@@ -229,7 +257,7 @@ class LoomVideoPipeline:
         latent_shape = (1, self.latent_dim, latent_t, latent_h, latent_w)
 
         print(f"Generating latent video: {latent_shape}")
-        print(f"Prompt: "{prompt}"")
+        print(f'Prompt: "{prompt}"')
 
         # Diffusion sampling
         latent = self.sampler.sample(
