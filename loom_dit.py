@@ -2,6 +2,7 @@
 Loom Diffusion Transformer (DiT)
 Spacetime patch-based transformer for latent video diffusion.
 """
+
 import math
 import torch
 import torch.nn as nn
@@ -15,6 +16,7 @@ def modulate(x, shift, scale):
 
 class TimestepEmbedder(nn.Module):
     """Sinusoidal timestep embedding."""
+
     def __init__(self, hidden_size: int, frequency_embedding_size: int = 256):
         super().__init__()
         self.mlp = nn.Sequential(
@@ -28,12 +30,16 @@ class TimestepEmbedder(nn.Module):
     def timestep_embedding(t, dim, max_period=10000):
         half = dim // 2
         freqs = torch.exp(
-            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, device=t.device) / half
+            -math.log(max_period)
+            * torch.arange(start=0, end=half, dtype=torch.float32, device=t.device)
+            / half
         )
         args = t[:, None].float() * freqs[None]
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if dim % 2:
-            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+            embedding = torch.cat(
+                [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
+            )
         return embedding
 
     def forward(self, t):
@@ -44,6 +50,7 @@ class TimestepEmbedder(nn.Module):
 
 class LabelEmbedder(nn.Module):
     """Text conditioning via pooled text embedding."""
+
     def __init__(self, text_embed_dim: int, hidden_size: int):
         super().__init__()
         self.mlp = nn.Sequential(
@@ -58,6 +65,7 @@ class LabelEmbedder(nn.Module):
 
 class RoPE3D(nn.Module):
     """3D Rotary Position Embeddings for space-time."""
+
     def __init__(self, dim: int, max_t: int = 128, max_h: int = 64, max_w: int = 64):
         super().__init__()
         self.dim = dim
@@ -76,13 +84,19 @@ class RoPE3D(nn.Module):
         # Frequencies for each dimension
         dim_per_axis = self.dim // 3
         freqs_t = torch.exp(
-            -math.log(10000) * torch.arange(0, dim_per_axis, 2, device=device).float() / dim_per_axis
+            -math.log(10000)
+            * torch.arange(0, dim_per_axis, 2, device=device).float()
+            / dim_per_axis
         )
         freqs_h = torch.exp(
-            -math.log(10000) * torch.arange(0, dim_per_axis, 2, device=device).float() / dim_per_axis
+            -math.log(10000)
+            * torch.arange(0, dim_per_axis, 2, device=device).float()
+            / dim_per_axis
         )
         freqs_w = torch.exp(
-            -math.log(10000) * torch.arange(0, dim_per_axis, 2, device=device).float() / dim_per_axis
+            -math.log(10000)
+            * torch.arange(0, dim_per_axis, 2, device=device).float()
+            / dim_per_axis
         )
 
         # Apply to positions
@@ -117,12 +131,21 @@ class RoPE3D(nn.Module):
 
 class DiTBlock(nn.Module):
     """DiT block with adaptive layer norm, self-attention, and cross-attention to text."""
-    def __init__(self, hidden_size: int, num_heads: int, mlp_ratio: float = 4.0, text_embed_dim: int = 768):
+
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        mlp_ratio: float = 4.0,
+        text_embed_dim: int = 768,
+    ):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.attn = nn.MultiheadAttention(hidden_size, num_heads, batch_first=True)
         self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.cross_attn = nn.MultiheadAttention(hidden_size, num_heads, batch_first=True)
+        self.cross_attn = nn.MultiheadAttention(
+            hidden_size, num_heads, batch_first=True
+        )
         self.norm3 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.mlp = nn.Sequential(
@@ -151,7 +174,9 @@ class DiTBlock(nn.Module):
         attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # x: (B, N, D), c: (B, D) conditioning, text: (B, L, D)
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp =             self.adaLN_modulation(c).chunk(6, dim=1)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            self.adaLN_modulation(c).chunk(6, dim=1)
+        )
 
         # Self-attention with AdaLN
         h = modulate(self.norm1(x), shift_msa, scale_msa)
@@ -176,6 +201,7 @@ class LoomDiT(nn.Module):
     Input: noisy latent video patches + timestep + text embedding
     Output: predicted noise
     """
+
     def __init__(
         self,
         latent_dim: int = 16,
@@ -199,7 +225,9 @@ class LoomDiT(nn.Module):
         self.patch_embed = nn.Linear(self.patch_dim, hidden_size)
 
         # Position embedding (learned, simpler than RoPE for now)
-        self.pos_embed = nn.Parameter(torch.zeros(1, max_t * max_h * max_w, hidden_size))
+        self.pos_embed = nn.Parameter(
+            torch.zeros(1, max_t * max_h * max_w, hidden_size)
+        )
         nn.init.normal_(self.pos_embed, std=0.02)
 
         # Timestep and text embedders
@@ -207,10 +235,12 @@ class LoomDiT(nn.Module):
         self.text_embedder = LabelEmbedder(text_embed_dim, hidden_size)
 
         # Transformer blocks
-        self.blocks = nn.ModuleList([
-            DiTBlock(hidden_size, num_heads, mlp_ratio, text_embed_dim)
-            for _ in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                DiTBlock(hidden_size, num_heads, mlp_ratio, text_embed_dim)
+                for _ in range(depth)
+            ]
+        )
 
         self.final_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.final_adaLN = nn.Sequential(
@@ -227,6 +257,7 @@ class LoomDiT(nn.Module):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
+
         self.apply(_basic_init)
 
         # Zero-out adaLN modulation layers
@@ -250,10 +281,14 @@ class LoomDiT(nn.Module):
         assert T % pt == 0 and H % ph == 0 and W % pw == 0
 
         x = x.view(
-            B, C,
-            T // pt, pt,
-            H // ph, ph,
-            W // pw, pw,
+            B,
+            C,
+            T // pt,
+            pt,
+            H // ph,
+            ph,
+            W // pw,
+            pw,
         )
         x = x.permute(0, 2, 4, 6, 1, 3, 5, 7).contiguous()
         x = x.view(B, -1, self.patch_dim)
