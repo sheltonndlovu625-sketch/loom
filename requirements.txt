@@ -1,20 +1,17 @@
-# Core (no PyTorch, no TensorFlow)
+# Core
+torch>=2.0.0
 numpy>=1.24.0
 opencv-python>=4.9.0
 scipy>=1.11.0
 
-# Compression
-lz4>=4.3.0
+# Diffusion / Transformers
+transformers>=4.30.0
+diffusers>=0.20.0
+accelerate>=0.20.0
 
 # Utilities
 tqdm>=4.66.0
+Pillow>=9.0.0
 
-# Optional: for better text parsing
-# nltk>=3.8.0
-# spacy>=3.7.0
-
-
-
-
-# Training-only (not needed at inference time)
-torch>=2.0.0
+# Optional: for faster attention
+# xformers
