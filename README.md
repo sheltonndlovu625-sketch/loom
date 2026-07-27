@@ -1,213 +1,120 @@
-# 🧵 Loom
+# Loom — Latent Video Diffusion Engine
 
-> *Video is not generated. It is woven.*
+**This is the Sora/Veo rewrite.** The old non-parametric patch-quilting engine is gone. Loom is now a full latent video diffusion model with a 3D causal VAE and a Diffusion Transformer (DiT).
 
-**Loom** is a playful, non-parametric video synthesizer. No neural networks. No gradient descent. No millions of weights. Just algorithms, patterns, and a little bit of magic.
+## Architecture
 
-Think of it as a **video loom** — you throw in raw footage, it learns the *motion*, *textures*, and *patterns*, then weaves new videos from your text prompts. It runs on your laptop. It runs on a Raspberry Pi. It runs *anywhere*.
+```
+Text Prompt → T5 Text Encoder → Text Embeddings
+                                      ↓
+Random Noise Latent (B,16,T/4,H/16,W/16) → DiT (768-dim, 16 layers) → Denoised Latent
+                                      ↓
+                         3D Causal VAE Decoder
+                                      ↓
+                              Video (T,H,W,3)
+```
 
-## 🎬 What It Does
+### 1. 3D Causal VAE (`loom_vae_3d.py`)
+- **Causal in time**: Frame t only sees frames ≤ t. No future leakage.
+- **Compression**: 4× temporal, 16× spatial. A 16-frame 256×256 video compresses to a `(16, 4, 16, 16)` latent tensor.
+- **Architecture**: CausalConv3d encoder/decoder with residual blocks and factorized space-time attention.
 
+### 2. Diffusion Transformer (`loom_dit.py`)
+- **Patchify**: Latent video is split into spacetime patches `(1, 2, 2)`.
+- **DiT Blocks**: AdaLN-Zero conditioning + self-attention + cross-attention to text.
+- **Text conditioning**: T5-small (or CLIP) text encoder → MLP projection → added to timestep embedding.
+- **Parameters**: ~300M–500M depending on depth (default: 768-dim, 16 layers, ~350M params).
+
+### 3. Pipeline (`loom_pipeline.py`)
+- **DDIM sampling**: 50 steps by default, configurable.
+- **Classifier-Free Guidance (CFG)**: Scale 7.5 default for prompt adherence.
+- **Output**: uint8 RGB video array `(T, H, W, 3)`.
+
+## Training
+
+### Step 1: Train the 3D VAE
 ```bash
-python inference.py \
-  --vid my-corpus.vid \
-  --prompt "ocean waves at sunset with panning camera" \
-  --output sunset.mp4
+python train_vae.py   --data_dir data/videos   --output_dir checkpoints/vae   --resolution 256   --clip_frames 16   --batch_size 2   --epochs 100
 ```
 
-And you get a 5-second video loop. Not photorealistic Hollywood VFX — something **weird, beautiful, and alive**.
+The VAE learns to compress video into causal spacetime latents. Training requires ~8GB VRAM at 256×256.
 
-## 🧶 The Philosophy
-
-Modern AI video treats pixels as math homework. Loom treats video as **woven fabric**:
-
-| Thread | What It Is |
-|--------|-----------|
-| 🌊 **Warp** | Motion fields — how the camera moves, how things flow |
-| 🎨 **Weft** | Texture patches — the visual fabric of the world |
-| ✨ **Pattern** | Cellular automata — organic detail that breathes |
-| 🧵 **Shuttle** | Your text prompt, parsed into a scene plan |
-
-The intelligence lives in **how we organize and compose**, not in learned parameters.
-
-## 🚀 Quick Start
-
-### 1. Install (No GPU needed!)
-
+### Step 2: Precompute Latents (automatic)
+The diffusion trainer caches VAE latents to disk for fast training:
 ```bash
-git clone https://github.com/YOURNAME/loom.git
-cd loom
-pip install -r requirements.txt
+python train_diffusion.py   --data_dir data/videos   --vae_path checkpoints/vae/vae_final.pt   --output_dir checkpoints/dit   --resolution 256   --clip_frames 16   --batch_size 4   --epochs 100   --hidden_size 768   --depth 16
 ```
 
-That's it. No PyTorch. No TensorFlow. No CUDA. Just NumPy, OpenCV, and SciPy.
+The DiT learns to predict noise in the latent space, conditioned on text embeddings. Training requires ~16GB VRAM at 256×256, batch_size=4.
 
-### 2. Build a Corpus
+## Inference
 
-Feed it some videos. Any videos. Home movies, stock footage, your cat sleeping.
+```python
+from loom import LoomEngine
 
+engine = LoomEngine(
+    vae_path="checkpoints/vae/vae_final.pt",
+    dit_path="checkpoints/dit/dit_final.pt",
+)
+
+video = engine.synthesize(
+    prompt="a red sports car drifting on a mountain road at sunset",
+    width=512,
+    height=512,
+    num_frames=16,
+    seed=42,
+    cfg_scale=7.5,
+)
+# video: (16, 512, 512, 3) uint8 numpy array
+```
+
+Or use the updated CLI:
 ```bash
-mkdir my_videos
-# Drop some .mp4 files in there
-
-python corpus.py \
-  --input_dir my_videos \
-  --output my-corpus.vid \
-  --target_size 1000
+python inference.py   --vae checkpoints/vae/vae_final.pt   --dit checkpoints/dit/dit_final.pt   --prompt "a baboon sitting in a bush"   --output baboon.mp4   --width 512   --height 512   --frames 16   --seed 42
 ```
 
-This extracts:
-- **Motion primitives** (optical flow patterns)
-- **Texture patches** (reusable visual fabric)
-- **CA rules** (cellular automata for organic detail)
+## What Changed
 
-### 3. Generate!
+| Old Loom | New Loom |
+|---|---|
+| Patch quilting + optical flow warping | 3D causal VAE + DiT |
+| No neural networks | Full latent diffusion |
+| 2D image warping | 3D spacetime generation |
+| Keyword regex matching | T5 text encoder |
+| Generates textures only | Generates objects, motion, physics |
+| 1GB mobile target | GPU training, GPU inference |
+| "Ocean waves" only | "A baboon in the bush" ✅ |
 
-```bash
-python inference.py \
-  --vid my-corpus.vid \
-  --prompt "forest path dolly camera golden hour" \
-  --output forest.mp4 \
-  --width 854 \
-  --height 480 \
-  --frames 120
-```
+## Requirements
 
-## 🎮 Prompt Ideas to Try
+- Python 3.10+
+- PyTorch 2.0+ with CUDA
+- 16GB+ VRAM for training (inference works on 8GB)
+- Training data: video files (MP4, AVI, MOV) with captions
 
-```bash
-# Chill vibes
-python inference.py --vid my-corpus.vid --prompt "ocean waves sunset panning" --output chill.mp4
+## Next Steps
 
-# Trippy abstract
-python inference.py --vid my-corpus.vid --prompt "neon city night orbit camera" --output trippy.mp4
+1. **Collect captioned video data**: The model needs text-video pairs. Use InternVid, WebVid, or your own dataset.
+2. **Scale up**: Increase DiT to 1024-dim, 24 layers for higher fidelity (~800M params).
+3. **Add motion embeddings**: Condition on camera motion (pan, dolly, orbit) for controllable cinematography.
+4. **Distill to 4 steps**: Use adversarial distillation (like SnapGen-V) for fast inference.
+5. **Quantize**: Export to INT8/CoreML for mobile deployment (future work).
 
-# Nature documentary style
-python inference.py --vid my-corpus.vid --prompt "mountain lake sunrise static" --output nature.mp4
+## Files
 
-# Weird and experimental
-python inference.py --vid my-corpus.vid --prompt "abstract dreamy zoom in" --output weird.mp4
-```
+| File | Purpose |
+|---|---|
+| `loom_vae_3d.py` | 3D causal VAE encoder/decoder |
+| `loom_dit.py` | Diffusion Transformer backbone |
+| `loom_pipeline.py` | Full inference pipeline with DDIM sampling |
+| `loom.py` | `LoomEngine` interface (same API as before) |
+| `train_vae.py` | VAE training script |
+| `train_diffusion.py` | DiT training script |
+| `requirements.txt` | Dependencies |
 
-## 📁 Project Structure
+## Citation
 
-```
-loom/
-├── loom.py              # 🧠 Core engine (Motion, Texture, CA, SceneGraph)
-├── corpus.py            # 🔨 Build .vid corpus from raw videos
-├── inference.py         # 🎬 CLI for video generation
-├── requirements.txt     # 📦 Just 5 dependencies, zero ML frameworks
-├── setup.py             # 📋 Package setup
-├── .github/
-│   └── workflows/
-│       └── build.yml    # 🤖 CI: build → test → release
-├── README.md            # 📖 You are here
-├── LICENSE              # ⚖️ MIT
-└── .gitignore           # 🙈 Ignore generated files
-```
-
-## 🧪 How It Actually Works
-
-### Training (Corpus Building)
-
-Instead of training a neural network, we **extract and index patterns** from your videos:
-
-```
-Raw Videos
-    ↓
-Optical Flow (Farneback) → Motion Primitives
-    ↓
-Patch Extraction + PCA   → Texture Library
-    ↓
-Pattern Mining           → CA Rulebook
-    ↓
-Compressed .vid File
-```
-
-All classical computer vision. No GPU needed. A few hours on a laptop.
-
-### Inference (Generation)
-
-```
-Text Prompt
-    ↓
-Parse → Scene Graph (background, camera, lighting, style)
-    ↓
-Retrieve Motion    → Warp texture through time
-Retrieve Texture   → Synthesize from exemplars
-Apply CA Rules     → Add organic breathing detail
-Color Grade        → Match lighting mood
-    ↓
-Video Frames!
-```
-
-## 💾 The .vid Format
-
-Not a model checkpoint. A **compressed pattern library**:
-
-| Section | What's Inside | ~Size |
-|---------|---------------|-------|
-| Motion | Optical flow archetypes | ~300MB |
-| Texture | PCA-compressed patch dictionary | ~400MB |
-| CA Rules | Cellular automata parameters | ~50MB |
-| Metadata | Scene graph index | ~50MB |
-| **Total** | | **~800MB** |
-
-## ⚡ Performance
-
-| Resolution | Duration | CPU Time | Memory |
-|-----------|----------|----------|--------|
-| 480p | 5s @ 24fps | ~5-15s | ~300MB |
-| 720p | 5s @ 24fps | ~15-30s | ~600MB |
-| 1080p | 5s @ 24fps | ~40-60s | ~1.2GB |
-
-*No GPU. No cloud. Just your CPU and some patience.*
-
-## 🎯 Why Build This?
-
-| | Diffusion Models | Loom |
-|---|----------------|------|
-| Parameters | 1B-50B | **Zero** |
-| Training | GPU cluster, weeks | **Laptop, hours** |
-| Inference | Needs GPU | **CPU only** |
-| Size | 10-50GB | **~1GB** |
-| Understandable | Black box | **Every step is inspectable** |
-| Fun factor | Serious business | **Playful and weird** |
-
-## 🐛 Known Limitations
-
-Loom is **not** trying to be Veo or Sora. It is:
-- ✅ Great for abstract, stylized, and experimental video
-- ✅ Great for seamless motion loops
-- ✅ Great for running on anything with a CPU
-- ❌ Not great for photorealistic human faces
-- ❌ Not great for complex multi-object physics
-- ❌ Not great for Hollywood VFX
-
-**It is great for making weird, beautiful things.**
-
-## 🤖 CI / GitHub Actions
-
-Push a tag and GitHub Actions will:
-1. **Build corpus** from your dataset
-2. **Test inference** on Linux, macOS, and Windows
-3. **Benchmark** performance
-4. **Release** the `.vid` file automatically
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-# → GitHub Actions builds and releases your corpus!
-```
-
-## 🧶 Contributing
-
-This is a playground. Add new motion extractors. Invent new CA rules. Try weird texture synthesis methods. Break things. Fix things. Make it weirder.
-
-## 📜 License
-
-MIT — built for creative coders who believe intelligence lives in algorithms, not just parameters.
-
----
-
-*"The best models are the ones you can understand, modify, and have fun with."*
+If you use this code, cite the key papers that make it possible:
+- Peebles & Xie, "Scalable Diffusion Models with Transformers" (DiT)
+- Blattmann et al., "Stable Video Diffusion" (3D VAE design)
+- Rombach et al., "High-Resolution Image Synthesis with Latent Diffusion Models" (LDM)
