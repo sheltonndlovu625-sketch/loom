@@ -5,6 +5,7 @@ Learns to denoise spacetime latent patches conditioned on text.
 Usage:
     python train_diffusion.py --data_dir data/videos --vae_path checkpoints/vae/vae_final.pt --output_dir checkpoints/dit
 """
+
 import argparse
 import os
 import torch
@@ -23,6 +24,7 @@ from loom_pipeline import TextEncoder
 
 class LatentVideoDataset(Dataset):
     """Dataset that precomputes VAE latents for efficient training."""
+
     def __init__(
         self,
         data_dir: str,
@@ -65,7 +67,9 @@ class LatentVideoDataset(Dataset):
         self.latent_files = []
         vae.eval()
 
-        for i, (vf, start, fps) in enumerate(tqdm(self.clips, desc="Precomputing latents")):
+        for i, (vf, start, fps) in enumerate(
+            tqdm(self.clips, desc="Precomputing latents")
+        ):
             cache_path = self.cache_dir / f"{vf.stem}_{start}.pt"
 
             if cache_path.exists():
@@ -90,11 +94,15 @@ class LatentVideoDataset(Dataset):
 
             # Convert to tensor
             video = np.stack(frames, axis=0).astype(np.float32) / 127.5 - 1.0
-            video = torch.from_numpy(video).permute(3, 0, 1, 2).unsqueeze(0).to(device)  # (1, C, T, H, W)
+            video = (
+                torch.from_numpy(video).permute(3, 0, 1, 2).unsqueeze(0).to(device)
+            )  # (1, C, T, H, W)
 
             # Encode to latent
             with torch.no_grad():
-                latent = vae.encode(video)  # (1, C_latent, T_latent, H_latent, W_latent)
+                latent = vae.encode(
+                    video
+                )  # (1, C_latent, T_latent, H_latent, W_latent)
 
             # Save
             torch.save(latent.cpu(), cache_path)
@@ -151,11 +159,15 @@ class DiffusionTrainer:
         print(f"DiT parameters: {total_params / 1e6:.1f}M")
 
         # Optimizer
-        self.optimizer = AdamW(self.model.parameters(), lr=args.lr, betas=(0.9, 0.999), weight_decay=0.05)
+        self.optimizer = AdamW(
+            self.model.parameters(), lr=args.lr, betas=(0.9, 0.999), weight_decay=0.05
+        )
 
         # Noise schedule
         self.num_train_timesteps = 1000
-        self.betas = torch.linspace(1e-4, 2e-2, self.num_train_timesteps).to(self.device)
+        self.betas = torch.linspace(1e-4, 2e-2, self.num_train_timesteps).to(
+            self.device
+        )
         self.alphas = 1.0 - self.betas
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
@@ -164,7 +176,9 @@ class DiffusionTrainer:
     def add_noise(self, latents, noise, timesteps):
         """Add noise to latents at given timesteps."""
         sqrt_alpha = self.sqrt_alphas_cumprod[timesteps].view(-1, 1, 1, 1, 1)
-        sqrt_one_minus_alpha = self.sqrt_one_minus_alphas_cumprod[timesteps].view(-1, 1, 1, 1, 1)
+        sqrt_one_minus_alpha = self.sqrt_one_minus_alphas_cumprod[timesteps].view(
+            -1, 1, 1, 1, 1
+        )
         return sqrt_alpha * latents + sqrt_one_minus_alpha * noise
 
     def train_epoch(self, dataloader, epoch):
@@ -176,10 +190,14 @@ class DiffusionTrainer:
             B = latents.shape[0]
 
             # Encode text
-            text_embeds = self.text_encoder.encode(captions).to(self.device)  # (B, L, D)
+            text_embeds = self.text_encoder.encode(captions).to(
+                self.device
+            )  # (B, L, D)
 
             # Sample random timesteps
-            timesteps = torch.randint(0, self.num_train_timesteps, (B,), device=self.device).long()
+            timesteps = torch.randint(
+                0, self.num_train_timesteps, (B,), device=self.device
+            ).long()
 
             # Sample noise
             noise = torch.randn_like(latents)
@@ -241,21 +259,39 @@ class DiffusionTrainer:
 
 def main():
     parser = argparse.ArgumentParser(description="Train Loom Diffusion Transformer")
-    parser.add_argument("--data_dir", required=True, help="Directory with training videos")
-    parser.add_argument("--vae_path", required=True, help="Path to trained VAE checkpoint")
-    parser.add_argument("--output_dir", default="checkpoints/dit", help="Checkpoint output directory")
-    parser.add_argument("--cache_dir", default="cache/latents", help="Latent cache directory")
-    parser.add_argument("--latent_dim", type=int, default=16, help="VAE latent dimension")
-    parser.add_argument("--hidden_size", type=int, default=768, help="DiT hidden dimension")
+    parser.add_argument(
+        "--data_dir", required=True, help="Directory with training videos"
+    )
+    parser.add_argument(
+        "--vae_path", required=True, help="Path to trained VAE checkpoint"
+    )
+    parser.add_argument(
+        "--output_dir", default="checkpoints/dit", help="Checkpoint output directory"
+    )
+    parser.add_argument(
+        "--cache_dir", default="cache/latents", help="Latent cache directory"
+    )
+    parser.add_argument(
+        "--latent_dim", type=int, default=16, help="VAE latent dimension"
+    )
+    parser.add_argument(
+        "--hidden_size", type=int, default=768, help="DiT hidden dimension"
+    )
     parser.add_argument("--depth", type=int, default=16, help="DiT depth")
     parser.add_argument("--num_heads", type=int, default=12, help="DiT attention heads")
-    parser.add_argument("--text_embed_dim", type=int, default=768, help="Text embedding dimension")
-    parser.add_argument("--resolution", type=int, default=256, help="Training resolution")
+    parser.add_argument(
+        "--text_embed_dim", type=int, default=768, help="Text embedding dimension"
+    )
+    parser.add_argument(
+        "--resolution", type=int, default=256, help="Training resolution"
+    )
     parser.add_argument("--clip_frames", type=int, default=16, help="Frames per clip")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
     parser.add_argument("--epochs", type=int, default=100, help="Training epochs")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--save_every", type=int, default=10, help="Save checkpoint every N epochs")
+    parser.add_argument(
+        "--save_every", type=int, default=10, help="Save checkpoint every N epochs"
+    )
     args = parser.parse_args()
 
     trainer = DiffusionTrainer(args)
