@@ -3,6 +3,7 @@ Loom 3D Causal VAE
 Compresses video into spacetime latent patches.
 Causal in time: frame t only sees frames <= t.
 """
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,6 +12,7 @@ from typing import Tuple, List
 
 class CausalConv3d(nn.Module):
     """3D convolution with causal padding in the temporal dimension."""
+
     def __init__(
         self,
         in_channels: int,
@@ -43,6 +45,7 @@ class CausalConv3d(nn.Module):
 
 class ResBlock3D(nn.Module):
     """Residual block with GroupNorm and CausalConv3d."""
+
     def __init__(self, channels: int, kernel_size: Tuple[int, int, int] = (3, 3, 3)):
         super().__init__()
         self.norm1 = nn.GroupNorm(32, channels)
@@ -59,6 +62,7 @@ class ResBlock3D(nn.Module):
 
 class Attention3D(nn.Module):
     """Factorized space-time attention for efficiency."""
+
     def __init__(self, channels: int, num_heads: int = 8):
         super().__init__()
         self.num_heads = num_heads
@@ -78,7 +82,9 @@ class Attention3D(nn.Module):
         v_s = v.view(B, self.num_heads, C // self.num_heads, T, H * W)
 
         scale = (C // self.num_heads) ** -0.5
-        attn = torch.softmax(torch.einsum("b h t i, b h t j -> b h t i j", q_s, k_s) * scale, dim=-1)
+        attn = torch.softmax(
+            torch.einsum("b h t i, b h t j -> b h t i j", q_s, k_s) * scale, dim=-1
+        )
         out_s = torch.einsum("b h t i j, b h t j -> b h t i", attn, v_s)
         out_s = out_s.view(B, C, T, H, W)
 
@@ -113,11 +119,15 @@ class Encoder(nn.Module):
         )
         self.down2 = nn.Sequential(
             ResBlock3D(128),
-            CausalConv3d(128, 256, (3, 3, 3), stride=(2, 2, 2)),  # /2 temporal, /2 spatial
+            CausalConv3d(
+                128, 256, (3, 3, 3), stride=(2, 2, 2)
+            ),  # /2 temporal, /2 spatial
         )
         self.down3 = nn.Sequential(
             ResBlock3D(256),
-            CausalConv3d(256, 512, (3, 3, 3), stride=(2, 2, 2)),  # /2 temporal, /2 spatial
+            CausalConv3d(
+                256, 512, (3, 3, 3), stride=(2, 2, 2)
+            ),  # /2 temporal, /2 spatial
         )
         self.down4 = nn.Sequential(
             ResBlock3D(512),
@@ -169,12 +179,16 @@ class Decoder(nn.Module):
         self.up2 = nn.Sequential(
             ResBlock3D(512),
             CausalConv3d(512, 256, (3, 3, 3), stride=(1, 1, 1)),
-            nn.Upsample(scale_factor=(2, 2, 2), mode="nearest"),  # *2 temporal, *2 spatial
+            nn.Upsample(
+                scale_factor=(2, 2, 2), mode="nearest"
+            ),  # *2 temporal, *2 spatial
         )
         self.up3 = nn.Sequential(
             ResBlock3D(256),
             CausalConv3d(256, 128, (3, 3, 3), stride=(1, 1, 1)),
-            nn.Upsample(scale_factor=(2, 2, 2), mode="nearest"),  # *2 temporal, *2 spatial
+            nn.Upsample(
+                scale_factor=(2, 2, 2), mode="nearest"
+            ),  # *2 temporal, *2 spatial
         )
         self.up4 = nn.Sequential(
             ResBlock3D(128),
@@ -198,6 +212,7 @@ class Decoder(nn.Module):
 
 class LoomVAE3D(nn.Module):
     """Full 3D causal VAE for video compression."""
+
     def __init__(self, latent_dim: int = 16):
         super().__init__()
         self.encoder = Encoder(latent_dim)
@@ -219,7 +234,9 @@ class LoomVAE3D(nn.Module):
         z = z / self.scaling_factor
         return self.decoder(z)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         mean, logvar = self.encoder(x)
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
@@ -227,7 +244,9 @@ class LoomVAE3D(nn.Module):
         recon = self.decoder(z)
         return recon, mean, logvar
 
-    def get_latent_shape(self, video_shape: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
+    def get_latent_shape(
+        self, video_shape: Tuple[int, int, int, int]
+    ) -> Tuple[int, int, int, int]:
         """Given (B, C, T, H, W), return latent shape."""
         B, C, T, H, W = video_shape
         # Temporal: /4 (two stride-2 downsamples)
