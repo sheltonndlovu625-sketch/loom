@@ -5,6 +5,7 @@ Learns to compress video into spacetime latent patches.
 Usage:
     python train_vae.py --data_dir data/videos --output_dir checkpoints/vae
 """
+
 import argparse
 import os
 import torch
@@ -21,6 +22,7 @@ from loom_vae_3d import LoomVAE3D
 
 class VideoDataset(Dataset):
     """Simple video dataset that loads clips."""
+
     def __init__(self, data_dir: str, clip_frames: int = 16, resolution: int = 256):
         self.data_dir = Path(data_dir)
         self.clip_frames = clip_frames
@@ -65,7 +67,11 @@ class VideoDataset(Dataset):
 
         # Pad if needed
         while len(frames) < self.clip_frames:
-            frames.append(frames[-1] if frames else np.zeros((self.resolution, self.resolution, 3), dtype=np.uint8))
+            frames.append(
+                frames[-1]
+                if frames
+                else np.zeros((self.resolution, self.resolution, 3), dtype=np.uint8)
+            )
 
         # Stack and normalize: (T, H, W, 3) -> (3, T, H, W), [-1, 1]
         video = np.stack(frames, axis=0).astype(np.float32) / 127.5 - 1.0
@@ -85,10 +91,14 @@ def train_vae(args):
     print(f"VAE parameters: {total_params / 1e6:.1f}M")
 
     # Optimizer
-    optimizer = AdamW(model.parameters(), lr=args.lr, betas=(0.5, 0.9), weight_decay=0.0)
+    optimizer = AdamW(
+        model.parameters(), lr=args.lr, betas=(0.5, 0.9), weight_decay=0.0
+    )
 
     # Dataset
-    dataset = VideoDataset(args.data_dir, clip_frames=args.clip_frames, resolution=args.resolution)
+    dataset = VideoDataset(
+        args.data_dir, clip_frames=args.clip_frames, resolution=args.resolution
+    )
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -132,11 +142,13 @@ def train_vae(args):
             optimizer.step()
 
             # Logging
-            pbar.set_postfix({
-                "loss": f"{loss.item():.4f}",
-                "recon": f"{recon_loss.item():.4f}",
-                "kl": f"{kl_loss.item():.6f}",
-            })
+            pbar.set_postfix(
+                {
+                    "loss": f"{loss.item():.4f}",
+                    "recon": f"{recon_loss.item():.4f}",
+                    "kl": f"{kl_loss.item():.6f}",
+                }
+            )
 
             global_step += 1
 
@@ -156,17 +168,27 @@ def train_vae(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Train Loom 3D VAE")
-    parser.add_argument("--data_dir", required=True, help="Directory with training videos")
-    parser.add_argument("--output_dir", default="checkpoints/vae", help="Checkpoint output directory")
-    parser.add_argument("--latent_dim", type=int, default=16, help="VAE latent dimension")
-    parser.add_argument("--resolution", type=int, default=256, help="Training resolution")
+    parser.add_argument(
+        "--data_dir", required=True, help="Directory with training videos"
+    )
+    parser.add_argument(
+        "--output_dir", default="checkpoints/vae", help="Checkpoint output directory"
+    )
+    parser.add_argument(
+        "--latent_dim", type=int, default=16, help="VAE latent dimension"
+    )
+    parser.add_argument(
+        "--resolution", type=int, default=256, help="Training resolution"
+    )
     parser.add_argument("--clip_frames", type=int, default=16, help="Frames per clip")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
     parser.add_argument("--epochs", type=int, default=100, help="Training epochs")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--kl_weight", type=float, default=1e-6, help="KL loss weight")
     parser.add_argument("--num_workers", type=int, default=4, help="Dataloader workers")
-    parser.add_argument("--save_every", type=int, default=5000, help="Save checkpoint every N steps")
+    parser.add_argument(
+        "--save_every", type=int, default=5000, help="Save checkpoint every N steps"
+    )
     args = parser.parse_args()
 
     train_vae(args)
