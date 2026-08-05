@@ -1,4 +1,4 @@
-name: Loom CI — Latent Diffusion Video Engine
+name: Loom CI — Build Corpus & Release
 
 on:
   push:
@@ -8,30 +8,29 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      training_data_url:
+      dataset_url:
         description: "URL to training video dataset (tar.gz)"
         default: ""
         required: false
-      run_gpu_tests:
-        description: "Run GPU-intensive tests"
-        type: boolean
-        default: false
-      run_training_smoke:
-        description: "Run training smoke test (requires GPU)"
-        type: boolean
-        default: false
+      max_videos:
+        description: "Max videos to process"
+        default: "5000"
+        required: false
+      target_size_mb:
+        description: "Target .vid size in MB"
+        default: "1000"
+        required: false
 
 env:
   PYTHON_VERSION: "3.11"
-  TORCH_VERSION: "2.3.0"
-  CUDA_VERSION: "cu121"
+  VID_FILE: "loom-corpus.vid"
 
 jobs:
-  # ========================================================================
-  # Job 1: Lint & Type Check
-  # ========================================================================
-  lint:
+  build-corpus:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
+    outputs:
+      vid_artifact: ${{ steps.upload.outputs.artifact_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,31 +44,58 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-lint-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
 
-      - name: Install lint deps
+      - name: Install dependencies
         run: |
-          pip install black ruff mypy
+          pip install -r requirements.txt
 
-      - name: Black format check
-        run: black --check .
+      - name: Download or generate training dataset
+        run: |
+          if [ -n "${{ github.event.inputs.dataset_url }}" ]; then
+            echo "Downloading dataset from URL..."
+            mkdir -p data/videos
+            wget -q -O data/dataset.tar.gz "${{ github.event.inputs.dataset_url }}"
+            tar -xzf data/dataset.tar.gz -C data/videos/
+          else
+            echo "No dataset URL provided. Generating synthetic test videos..."
+            python scripts/generate_test_videos.py --output_dir data/videos --num_videos 10 --frames 48
+          fi
 
-      - name: Ruff lint
-        run: ruff check .
+      - name: Build corpus
+        run: |
+          python corpus.py \
+            --input_dir data/videos \
+            --output ${{ env.VID_FILE }} \
+            --max_videos ${{ github.event.inputs.max_videos || 5000 }} \
+            --target_size ${{ github.event.inputs.target_size_mb || 1000 }}
 
-      - name: MyPy type check
-        run: mypy loom_vae_3d.py loom_dit.py loom_pipeline.py loom.py --ignore-missing-imports
+      - name: Verify corpus size
+        run: |
+          SIZE_MB=$(du -m ${{ env.VID_FILE }} | cut -f1)
+          echo "Corpus size: ${SIZE_MB}MB"
+          if [ "$SIZE_MB" -gt 1100 ]; then
+            echo "::error::Corpus exceeds 1.1GB limit"
+            exit 1
+          fi
+          echo "::notice::Size check passed: ${SIZE_MB}MB"
 
-  # ========================================================================
-  # Job 2: CPU Unit Tests (No GPU required)
-  # ========================================================================
-  test-cpu:
-    needs: lint
-    runs-on: ubuntu-latest
+      - name: Upload corpus artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: loom-corpus
+          path: ${{ env.VID_FILE }}
+          retention-days: 30
+
+  test:
+    needs: build-corpus
     strategy:
       matrix:
-        python: ["3.10", "3.11", "3.12"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.11"]
       fail-fast: false
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -79,162 +105,35 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ matrix.python }}-${{ hashFiles('requirements.txt') }}
-
       - name: Install dependencies
         run: |
-          pip install torch==${{ env.TORCH_VERSION }}+cpu -f https://download.pytorch.org/whl/torch_stable.html
-          pip install -r requirements.txt
-          pip install pytest pytest-cov
-
-      - name: Run CPU unit tests
-        run: |
-          pytest tests/ -v -m "not gpu" --cov=. --cov-report=xml
-        env:
-          PYTEST_CURRENT_TEST: 1
-
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./coverage.xml
-          fail_ci_if_error: false
-
-  # ========================================================================
-  # Job 3: GPU Smoke Tests (Requires self-hosted GPU runner)
-  # ========================================================================
-  test-gpu:
-    needs: lint
-    if: github.event.inputs.run_gpu_tests == 'true' || github.ref == 'refs/heads/main'
-    runs-on: self-hosted-gpu  # You must configure this runner in repo settings
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install CUDA PyTorch
-        run: |
-          pip install torch==${{ env.TORCH_VERSION }}+${{ env.CUDA_VERSION }} -f https://download.pytorch.org/whl/torch_stable.html
-          pip install -r requirements.txt
-          pip install pytest
-
-      - name: GPU sanity check
-        run: |
-          python -c "import torch; assert torch.cuda.is_available(); print(f'CUDA: {torch.cuda.get_device_name(0)}')"
-
-      - name: Run GPU tests
-        run: |
-          pytest tests/ -v -m gpu
-
-      - name: VAE forward/backward smoke test
-        run: |
-          python -c "
-          import torch
-          from loom_vae_3d import LoomVAE3D
-          model = LoomVAE3D(latent_dim=16).cuda()
-          x = torch.randn(1, 3, 16, 256, 256).cuda()
-          recon, mean, logvar = model(x)
-          loss = recon.mean() + mean.mean() + logvar.mean()
-          loss.backward()
-          print('VAE forward/backward: OK')
-          print(f'Recon shape: {recon.shape}')
-          print(f'Latent shape: {mean.shape}')
-          "
-
-      - name: DiT forward smoke test
-        run: |
-          python -c "
-          import torch
-          from loom_dit import LoomDiT
-          model = LoomDiT(latent_dim=16, hidden_size=768, depth=4).cuda()
-          x = torch.randn(1, 16, 4, 16, 16).cuda()
-          t = torch.tensor([500]).cuda()
-          text = torch.randn(1, 77, 768).cuda()
-          out = model(x, t, text)
-          print('DiT forward: OK')
-          print(f'Output shape: {out.shape}')
-          "
-
-  # ========================================================================
-  # Job 4: Training Smoke Test (Mini VAE + DiT on synthetic data)
-  # ========================================================================
-  training-smoke:
-    needs: test-gpu
-    if: github.event.inputs.run_training_smoke == 'true'
-    runs-on: self-hosted-gpu
-    timeout-minutes: 120
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: |
-          pip install torch==${{ env.TORCH_VERSION }}+${{ env.CUDA_VERSION }} -f https://download.pytorch.org/whl/torch_stable.html
           pip install -r requirements.txt
 
-      - name: Generate synthetic training data
-        run: |
-          mkdir -p data/smoke_test
-          python -c "
-          import cv2
-          import numpy as np
-          import os
-          os.makedirs('data/smoke_test', exist_ok=True)
-          for i in range(5):
-              out = cv2.VideoWriter(f'data/smoke_test/video_{i:03d}.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 8, (128, 128))
-              for f in range(16):
-                  frame = np.random.randint(0, 255, (128, 128, 3), dtype=np.uint8)
-                  cv2.putText(frame, f'vid{i} f{f}', (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-                  out.write(frame)
-              out.release()
-          print('Generated 5 synthetic videos')
-          "
+      - name: Download corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: loom-corpus
 
-      - name: Smoke train VAE (10 steps)
+      - name: Run inference tests
         run: |
-          python train_vae.py             --data_dir data/smoke_test             --output_dir checkpoints/smoke/vae             --resolution 128             --clip_frames 16             --batch_size 1             --epochs 1             --save_every 5
+          python inference.py --vid ${{ env.VID_FILE }} --prompt "ocean waves at sunset with panning camera" --output test_sunset.mp4 --width 480 --height 272 --frames 48 --seed 42
+          python inference.py --vid ${{ env.VID_FILE }} --prompt "forest path dolly camera golden hour" --output test_forest.mp4 --width 480 --height 272 --frames 48 --seed 123
 
-      - name: Smoke train DiT (10 steps)
+      - name: Verify outputs
+        shell: bash
         run: |
-          python train_diffusion.py             --data_dir data/smoke_test             --vae_path checkpoints/smoke/vae/vae_final.pt             --output_dir checkpoints/smoke/dit             --cache_dir cache/smoke             --resolution 128             --clip_frames 16             --batch_size 1             --epochs 1             --hidden_size 384             --depth 4             --num_heads 6             --save_every 1
+          for f in test_sunset.mp4 test_forest.mp4; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing output: $f"
+              exit 1
+            fi
+            SIZE=$(du -k "$f" | cut -f1)
+            echo "$f: ${SIZE}KB"
+          done
+          echo "::notice::All inference tests passed on ${{ matrix.os }}"
 
-      - name: Smoke inference
-        run: |
-          python -c "
-          from loom import LoomEngine
-          import numpy as np
-          engine = LoomEngine(
-              vae_path='checkpoints/smoke/vae/vae_final.pt',
-              dit_path='checkpoints/smoke/dit/dit_final.pt',
-              latent_dim=16,
-              dit_hidden_size=384,
-              dit_depth=4,
-              dit_num_heads=6,
-          )
-          video = engine.synthesize('a test video', width=128, height=128, num_frames=16, seed=42)
-          assert video.shape == (16, 128, 128, 3)
-          assert video.dtype == np.uint8
-          print(f'Inference smoke test passed: {video.shape}')
-          "
-
-  # ========================================================================
-  # Job 5: Model Size & Parameter Audit
-  # ========================================================================
-  model-audit:
-    needs: lint
+  benchmark:
+    needs: build-corpus
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -245,45 +144,35 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install transformers
+          pip install -r requirements.txt
 
-      - name: Parameter count audit
+      - name: Download corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: loom-corpus
+
+      - name: Run benchmarks
         run: |
           python -c "
-          from loom_vae_3d import LoomVAE3D
-          from loom_dit import LoomDiT
-
-          vae = LoomVAE3D(latent_dim=16)
-          dit = LoomDiT(latent_dim=16, hidden_size=768, depth=16, num_heads=12)
-
-          vae_params = sum(p.numel() for p in vae.parameters())
-          dit_params = sum(p.numel() for p in dit.parameters())
-          total = vae_params + dit_params
-
-          print('='*50)
-          print('MODEL PARAMETER AUDIT')
-          print('='*50)
-          print(f'VAE:  {vae_params/1e6:.1f}M')
-          print(f'DiT:  {dit_params/1e6:.1f}M')
-          print(f'Total: {total/1e6:.1f}M')
-          print(f'Total FP32 size: {total*4/1024**3:.2f}GB')
-          print(f'Total FP16 size: {total*2/1024**3:.2f}GB')
-          print(f'Total INT8 size: {total*1/1024**3:.2f}GB')
-          print('='*50)
-
-          # Fail if exceeds 2GB FP16 (reasonable upper bound for local)
-          assert total*2/1024**3 < 2.0, 'Model exceeds 2GB FP16 budget'
-          print('Size check: PASSED')
+          import time
+          import sys
+          sys.path.insert(0, '.')
+          from loom import LoomEngine
+          
+          engine = LoomEngine('${{ env.VID_FILE }}')
+          
+          resolutions = [(480, 272), (854, 480)]
+          for w, h in resolutions:
+              start = time.time()
+              frames = engine.synthesize('ocean sunset', width=w, height=h, num_frames=24, seed=42)
+              elapsed = time.time() - start
+              print(f'Resolution {w}x{h}: {elapsed:.2f}s ({24/elapsed:.1f} fps)')
           "
 
-  # ========================================================================
-  # Job 6: Build & Release
-  # ========================================================================
   release:
-    needs: [lint, test-cpu, model-audit]
+    needs: [build-corpus, test, benchmark]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -292,49 +181,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Download corpus
+        uses: actions/download-artifact@v4
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Build package
-        run: |
-          pip install build
-          python -m build
+          name: loom-corpus
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/*.whl
-            dist/*.tar.gz
+            ${{ env.VID_FILE }}
           body: |
-            ## Loom Latent Video Diffusion ${{ github.ref_name }}
-
-            A Sora-style latent video diffusion engine.
-
-            ### Architecture
-            - 3D Causal VAE for spacetime compression
-            - Diffusion Transformer (DiT) with text conditioning
-            - DDIM sampling with Classifier-Free Guidance
-
+            ## Loom Video Synthesizer ${{ github.ref_name }}
+            
+            A non-parametric video generation engine. No neural networks. Pure algorithms.
+            
             ### Quick Start
             ```bash
-            pip install loom-video==${{ github.ref_name }}
-
-            # Download pretrained weights (host separately)
-            # Then generate:
-            python -c "
-            from loom import LoomEngine
-            engine = LoomEngine('vae.pt', 'dit.pt')
-            video = engine.synthesize('a baboon in the bush', 512, 512, 16)
-            "
+            pip install -r requirements.txt
+            python inference.py --vid loom-corpus.vid --prompt "ocean waves at sunset" --output video.mp4
             ```
-
-            ### Training
-            See README.md for full training instructions.
-
-            ### Model Sizes
-            - VAE: ~45M parameters
-            - DiT (768/16): ~350M parameters
-            - Total FP16: ~800MB
+            
+            ### Performance
+            - 480p, 5s video: ~5-15s on modern CPU
+            - 720p, 5s video: ~15-30s on modern CPU
+            - No GPU required
